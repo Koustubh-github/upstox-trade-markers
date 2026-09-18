@@ -337,9 +337,7 @@ function App() {
     Fetch today's executed trades when authenticated
   */
   useEffect(() => {
-    // Demo mode: Force skip fetching real trades to prevent 401 errors
-    // and rely on the local mock trades instead.
-    if (true) {
+    if (!authStatus.authenticated) {
       return;
     }
 
@@ -402,14 +400,20 @@ function App() {
   }, [authStatus.authenticated]);
 
   /*
-    Align mock trades if running in demo / unauthenticated mode
+    Align mock trades when running in demo mode or when no real API trades are loaded
   */
   useEffect(() => {
-    // Demo mode: Always align mock trades regardless of auth status
     if (chartCandles.length > 0) {
-      setTrades((prev) => alignMockTradesToCandles(mockTrades, chartCandles));
+      const isUsingMock =
+        !authStatus.authenticated ||
+        trades.length === 0 ||
+        trades[0]?.id === mockTrades[0]?.id;
+
+      if (isUsingMock) {
+        setTrades(alignMockTradesToCandles(mockTrades, chartCandles));
+      }
     }
-  }, [chartCandles, authStatus.authenticated]);
+  }, [chartCandles, authStatus.authenticated, trades.length]);
 
   const optionPnL = calculateOptionPnL(trades);
 
