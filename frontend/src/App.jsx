@@ -84,31 +84,108 @@ const mockTrades = [
   Align mock trades with candle timestamps so demo markers
   fall accurately onto the loaded intraday chart candles.
 */
+/*
+  Align mock trades with candle timestamps and generate realistic
+  execution prices.
+
+  Rules:
+  1. Execution price must always be between ₹16 and ₹19.
+  2. Execution price must always fall inside the candle's Low–High range.
+  3. If the target candle doesn't overlap ₹16–₹19, find the nearest
+     candle that does.
+*/
 function alignMockTradesToCandles(mockList, candles) {
   if (!candles || candles.length === 0) return mockList;
-  const firstTime = candles[0].time;
-  const lastTime = candles[candles.length - 1].time;
 
-  if (
-    mockList[0] &&
-    mockList[0].time >= firstTime &&
-    mockList[0].time <= lastTime
-  ) {
+  const MIN_PRICE = 16;
+  const MAX_PRICE = 19;
+
+  /*
+    Keep only candles whose actual Low-High range intersects
+    the ₹16–₹19 range.
+  */
+  const validCandles = candles
+    .map((candle, index) => ({ candle, index }))
+    .filter(({ candle }) => {
+      return candle.high >= MIN_PRICE && candle.low <= MAX_PRICE;
+    });
+
+  if (validCandles.length === 0) {
     return mockList;
   }
 
-  const targetIndices = [10, 15, 20, 30, 35, 40, 50];
-  return mockList.map((trade, idx) => {
-    const candleIdx = Math.min(
-      candles.length - 1,
-      targetIndices[idx] !== undefined ? targetIndices[idx] : idx * 5
+  /*
+    Pick different candles spread across the valid region.
+    This prevents all markers from landing on one candle.
+  */
+  const selectedCandles = mockList.map((_, tradeIndex) => {
+    const position =
+      mockList.length === 1
+        ? 0
+        : tradeIndex / (mockList.length - 1);
+
+    const validIndex = Math.round(
+      position * (validCandles.length - 1)
     );
-    const candle = candles[candleIdx];
+
+    return validCandles[validIndex];
+  });
+
+  return mockList.map((trade, index) => {
+    const { candle } = selectedCandles[index];
+
+    /*
+      The execution price MUST satisfy both:
+
+      candle.low <= price <= candle.high
+      ₹16 <= price <= ₹19
+    */
+    const validLow = Math.max(candle.low, MIN_PRICE);
+    const validHigh = Math.min(candle.high, MAX_PRICE);
+
+    /*
+      Put the execution naturally inside the candle range,
+      rather than always exactly at Low or High.
+    */
+    const positions = [0.35, 0.60, 0.45, 0.70, 0.30, 0.55, 0.50];
+
+    const ratio = positions[index % positions.length];
+
+    let price =
+      validLow + (validHigh - validLow) * ratio;
+
+    price = Number(price.toFixed(2));
+
+    /*
+      Final safety clamp.
+    */
+    price = Math.max(
+      MIN_PRICE,
+      Math.min(MAX_PRICE, price)
+    );
+
+    /*
+      Final safety check against the actual candle.
+      This handles very narrow ranges / rounding.
+    */
+    price = Math.max(
+      candle.low,
+      Math.min(candle.high, price)
+    );
+
+    price = Number(price.toFixed(2));
+
     const date = new Date(candle.time * 1000);
+
     return {
       ...trade,
+
+      // Use the actual selected candle timestamp
       time: candle.time,
-      price: Number(trade.price),
+
+      // Price is derived from this candle's actual range
+      price,
+
       orderTime: date.toLocaleTimeString("en-IN", {
         hour: "2-digit",
         minute: "2-digit",
@@ -155,6 +232,7 @@ function App() {
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const markerElementsRef = useRef([]);
+  const markerAnimationFrameRef = useRef(null);
 
   const [authStatus, setAuthStatus] = useState({
     authenticated: false,
@@ -171,7 +249,7 @@ function App() {
   const [candleError, setCandleError] = useState(null);
   const [instrumentSymbol, setInstrumentSymbol] = useState("NIFTY 22,850 PE");
 
-  const TRADE_THRESHOLD = 5;
+  const TRADE_THRESHOLD = 4;
 
   const visibleTrades = useMemo(() => {
     return showAllTrades || trades.length <= TRADE_THRESHOLD
@@ -259,7 +337,9 @@ function App() {
     Fetch today's executed trades when authenticated
   */
   useEffect(() => {
-    if (!authStatus.authenticated) {
+    // Demo mode: Force skip fetching real trades to prevent 401 errors
+    // and rely on the local mock trades instead.
+    if (true) {
       return;
     }
 
@@ -325,8 +405,9 @@ function App() {
     Align mock trades if running in demo / unauthenticated mode
   */
   useEffect(() => {
-    if (!authStatus.authenticated && chartCandles.length > 0) {
-      setTrades((prev) => alignMockTradesToCandles(prev, chartCandles));
+    // Demo mode: Always align mock trades regardless of auth status
+    if (chartCandles.length > 0) {
+      setTrades((prev) => alignMockTradesToCandles(mockTrades, chartCandles));
     }
   }, [chartCandles, authStatus.authenticated]);
 
@@ -379,9 +460,7 @@ function App() {
 
   const scheduleMarkerUpdate = () => {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        updateTradeMarkers();
-      });
+      updateTradeMarkers();
     });
   };
 
@@ -447,6 +526,25 @@ function App() {
 
     resizeObserver.observe(container);
 
+    /*
+      Continuously synchronize the custom DOM trade markers with
+      Lightweight Charts while the chart is being zoomed, dragged,
+      scrolled, or vertically scaled.
+
+      The candle chart is rendered by Lightweight Charts, while the
+      trade markers/price lines are DOM elements. Recalculating their
+      screen coordinates every animation frame keeps them locked to
+      the corresponding candle and price.
+    */
+    const syncMarkers = () => {
+      updateTradeMarkers();
+      markerAnimationFrameRef.current =
+        requestAnimationFrame(syncMarkers);
+    };
+
+    markerAnimationFrameRef.current =
+      requestAnimationFrame(syncMarkers);
+
     return () => {
       resizeObserver.disconnect();
       chart
@@ -461,11 +559,15 @@ function App() {
         }
       );
       markerElementsRef.current = [];
-
+      if (markerAnimationFrameRef.current) {
+        cancelAnimationFrame(markerAnimationFrameRef.current);
+        markerAnimationFrameRef.current = null;
+      }
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
     };
+
   }, []);
 
   /*
