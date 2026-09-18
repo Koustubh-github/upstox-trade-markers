@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 5000;
 
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: true,
     credentials: true,
   })
 );
@@ -28,6 +28,10 @@ app.get("/api/health", (req, res) => {
 app.use("/auth", authRoutes);
 app.use("/api/trades", tradeRoutes);
 app.use("/api/candles", candleRoutes);
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Backend running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
