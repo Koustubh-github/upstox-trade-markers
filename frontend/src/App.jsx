@@ -5,7 +5,7 @@ import {
 } from "lightweight-charts";
 import "./App.css";
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = "";
 
 const mockTrades = [
   {
