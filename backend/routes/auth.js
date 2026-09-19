@@ -7,8 +7,96 @@ const { exchangeCodeForToken } = require("../services/upstox");
 const router = express.Router();
 
 const TOKEN_FILE = path.join(__dirname, "../.token.json");
+const COOKIE_NAME = "upstox_session";
 
-// Helper to load token safely from disk on startup
+function getSecret() {
+  const secret = process.env.SESSION_SECRET;
+  if (!secret && process.env.NODE_ENV === "production") {
+    throw new Error("SESSION_SECRET environment variable is required in production");
+  }
+  return secret || "dev_local_fallback_secret_32bytes!!";
+}
+
+function deriveKey(secret) {
+  return crypto.createHash("sha256").update(secret).digest();
+}
+
+function encryptToken(token) {
+  if (!token) return null;
+  const secret = getSecret();
+  const key = deriveKey(secret);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  let encrypted = cipher.update(token, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  const authTag = cipher.getAuthTag().toString("hex");
+  return `${iv.toString("hex")}:${authTag}:${encrypted}`;
+}
+
+function decryptToken(encryptedData) {
+  if (!encryptedData) return null;
+  try {
+    const parts = encryptedData.split(":");
+    if (parts.length !== 3) return null;
+    const [ivHex, authTagHex, encryptedHex] = parts;
+    const secret = getSecret();
+    const key = deriveKey(secret);
+    const iv = Buffer.from(ivHex, "hex");
+    const authTag = Buffer.from(authTagHex, "hex");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(encryptedHex, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+    return decrypted;
+  } catch (err) {
+    return null;
+  }
+}
+
+function parseCookies(req) {
+  const list = {};
+  const rc = req.headers.cookie;
+  if (rc) {
+    rc.split(";").forEach((cookie) => {
+      const parts = cookie.split("=");
+      list[parts.shift().trim()] = decodeURIComponent(parts.join("="));
+    });
+  }
+  return list;
+}
+
+function setTokenCookie(res, token) {
+  const encrypted = encryptToken(token);
+  const isProd = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+  const cookieOptions = [
+    `${COOKIE_NAME}=${encodeURIComponent(encrypted)}`,
+    "Path=/",
+    "HttpOnly",
+    `SameSite=${isProd ? "Lax" : "Lax"}`,
+    "Max-Age=86400",
+  ];
+  if (isProd) {
+    cookieOptions.push("Secure");
+  }
+  res.setHeader("Set-Cookie", cookieOptions.join("; "));
+}
+
+function clearTokenCookie(res) {
+  const isProd = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+  const cookieOptions = [
+    `${COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    `SameSite=${isProd ? "Lax" : "Lax"}`,
+    "Max-Age=0",
+  ];
+  if (isProd) {
+    cookieOptions.push("Secure");
+  }
+  res.setHeader("Set-Cookie", cookieOptions.join("; "));
+}
+
+// Local dev fallback disk helpers
 function loadTokenFromDisk() {
   try {
     if (fs.existsSync(TOKEN_FILE)) {
@@ -23,7 +111,6 @@ function loadTokenFromDisk() {
   return null;
 }
 
-// Helper to save token safely to disk
 function saveTokenToDisk(token) {
   try {
     fs.writeFileSync(
@@ -35,11 +122,10 @@ function saveTokenToDisk(token) {
       { mode: 0o600 }
     );
   } catch (err) {
-    console.error("Failed to persist token locally:", err.message);
+    // Ignore write errors on read-only serverless disk
   }
 }
 
-// Helper to clear token
 function clearTokenFromDisk() {
   try {
     if (fs.existsSync(TOKEN_FILE)) {
@@ -50,7 +136,16 @@ function clearTokenFromDisk() {
   }
 }
 
-let accessToken = loadTokenFromDisk();
+let devMemoryToken = loadTokenFromDisk();
+
+function extractAccessToken(req) {
+  const cookies = parseCookies(req);
+  const cookieToken = decryptToken(cookies[COOKIE_NAME]);
+  if (cookieToken) {
+    return cookieToken;
+  }
+  return devMemoryToken;
+}
 
 router.get("/login", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
@@ -88,8 +183,10 @@ router.get("/callback", async (req, res) => {
 
     const tokenData = await exchangeCodeForToken(code);
 
-    accessToken = tokenData.access_token;
-    saveTokenToDisk(accessToken);
+    const token = tokenData.access_token;
+    devMemoryToken = token;
+    saveTokenToDisk(token);
+    setTokenCookie(res, token);
 
     console.log("Upstox authentication successful");
 
@@ -108,18 +205,20 @@ router.get("/callback", async (req, res) => {
 });
 
 router.get("/status", (req, res) => {
+  const token = extractAccessToken(req);
   res.json({
-    authenticated: Boolean(accessToken),
+    authenticated: Boolean(token),
   });
 });
 
 router.post("/logout", (req, res) => {
-  accessToken = null;
+  devMemoryToken = null;
   clearTokenFromDisk();
+  clearTokenCookie(res);
   res.json({ success: true, authenticated: false });
 });
 
-// Make token available to other routes (never exposed via HTTP response)
-router.getAccessToken = () => accessToken;
+// Helper for other routes to retrieve access token from request
+router.getAccessToken = (req) => extractAccessToken(req);
 
 module.exports = router;

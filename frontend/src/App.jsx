@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import {
   createChart,
   CandlestickSeries,
@@ -97,23 +98,6 @@ const mockTrades = [
 function alignMockTradesToCandles(mockList, candles) {
   if (!candles || candles.length === 0) return mockList;
 
-  const MIN_PRICE = 16;
-  const MAX_PRICE = 19;
-
-  /*
-    Keep only candles whose actual Low-High range intersects
-    the ₹16–₹19 range.
-  */
-  const validCandles = candles
-    .map((candle, index) => ({ candle, index }))
-    .filter(({ candle }) => {
-      return candle.high >= MIN_PRICE && candle.low <= MAX_PRICE;
-    });
-
-  if (validCandles.length === 0) {
-    return mockList;
-  }
-
   /*
     Pick different candles spread across the valid region.
     This prevents all markers from landing on one candle.
@@ -125,23 +109,14 @@ function alignMockTradesToCandles(mockList, candles) {
         : tradeIndex / (mockList.length - 1);
 
     const validIndex = Math.round(
-      position * (validCandles.length - 1)
+      position * (candles.length - 1)
     );
 
-    return validCandles[validIndex];
+    return candles[validIndex];
   });
 
   return mockList.map((trade, index) => {
-    const { candle } = selectedCandles[index];
-
-    /*
-      The execution price MUST satisfy both:
-
-      candle.low <= price <= candle.high
-      ₹16 <= price <= ₹19
-    */
-    const validLow = Math.max(candle.low, MIN_PRICE);
-    const validHigh = Math.min(candle.high, MAX_PRICE);
+    const candle = selectedCandles[index];
 
     /*
       Put the execution naturally inside the candle range,
@@ -151,28 +126,7 @@ function alignMockTradesToCandles(mockList, candles) {
 
     const ratio = positions[index % positions.length];
 
-    let price =
-      validLow + (validHigh - validLow) * ratio;
-
-    price = Number(price.toFixed(2));
-
-    /*
-      Final safety clamp.
-    */
-    price = Math.max(
-      MIN_PRICE,
-      Math.min(MAX_PRICE, price)
-    );
-
-    /*
-      Final safety check against the actual candle.
-      This handles very narrow ranges / rounding.
-    */
-    price = Math.max(
-      candle.low,
-      Math.min(candle.high, price)
-    );
-
+    let price = candle.low + (candle.high - candle.low) * ratio;
     price = Number(price.toFixed(2));
 
     const date = new Date(candle.time * 1000);
@@ -228,6 +182,7 @@ function calculateOptionPnL(trades) {
 }
 
 function App() {
+  
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -242,6 +197,7 @@ function App() {
   const [showTrades, setShowTrades] = useState(true);
   const [showAllTrades, setShowAllTrades] = useState(false);
   const [selectedTrade, setSelectedTrade] = useState(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   const [trades, setTrades] = useState(mockTrades);
   const [chartCandles, setChartCandles] = useState([]);
@@ -485,6 +441,20 @@ function App() {
         background: { color: "#0b0f14" },
         textColor: "#d1d5db",
       },
+      localization: {
+        timeFormatter: (time) => {
+          const date = new Date(time * 1000);
+          return new Intl.DateTimeFormat("en-IN", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).format(date);
+        },
+      },
       grid: {
         vertLines: { color: "#1f2937" },
         horzLines: { color: "#1f2937" },
@@ -496,6 +466,22 @@ function App() {
         borderColor: "#374151",
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: (time, tickMarkType) => {
+          const date = new Date(time * 1000);
+          if (tickMarkType >= 3) {
+            return new Intl.DateTimeFormat("en-IN", {
+              timeZone: "Asia/Kolkata",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            }).format(date);
+          }
+          return new Intl.DateTimeFormat("en-IN", {
+            timeZone: "Asia/Kolkata",
+            month: "short",
+            day: "numeric",
+          }).format(date);
+        },
       },
       crosshair: {
         mode: 0,
@@ -717,6 +703,18 @@ function App() {
             </div>
 
             <div className="toolbar-actions">
+              <button
+                className="recent-button"
+                onClick={() => setShowHelp(!showHelp)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
+                ? How to read
+              </button>
+
               {/* Upstox auth status & login button */}
               {authStatus.authenticated ? (
                 <span
@@ -779,7 +777,98 @@ function App() {
           </div>
 
           {/* CHART */}
-          <div ref={chartContainerRef} className="chart-container" />
+          <div style={{ position: "relative" }}>
+            {showHelp && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "16px",
+                  right: "16px",
+                  background: "#1e293b",
+                  border: "1px solid #334155",
+                  borderRadius: "8px",
+                  padding: "16px",
+                  color: "#f8fafc",
+                  fontSize: "13px",
+                  zIndex: 50,
+                  boxShadow:
+                    "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                  width: "280px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <h3
+                    style={{
+                      margin: 0,
+                      fontSize: "14px",
+                      fontWeight: "600",
+                      color: "#e2e8f0",
+                    }}
+                  >
+                    How to read
+                  </h3>
+                  <button
+                    onClick={() => setShowHelp(false)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#94a3b8",
+                      cursor: "pointer",
+                      fontSize: "18px",
+                      padding: 0,
+                      lineHeight: 1,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "8px",
+                  }}
+                >
+                  <div>
+                    <strong>🟢 Buy · 🔴 Sell</strong> — execution markers
+                  </div>
+                  <div>
+                    <strong>Number</strong> — lots in the execution
+                  </div>
+                  <div>
+                    <strong>Dotted line</strong> — execution price
+                  </div>
+                  <div>
+                    <strong>“7 executions · Showing latest 4”</strong> — total vs. displayed executions
+                  </div>
+                  <div>
+                    <strong>“Upstox Live”</strong> — connected to live Upstox market data; executions shown are simulated
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={chartContainerRef} className="chart-container" />
+          </div>
+
+          <div style={{ padding: "12px 16px", textAlign: "right" }}>
+            <a
+              href="https://docs.google.com/document/d/1NyQZ4p3ci2NwaETXecyz6n3gshqxLxVjAleaetRzpMM/edit?usp=sharing"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="prd-button"
+            >
+              View PRD ↗
+            </a>
+          </div>
         </section>
 
         {/* EXECUTION DETAILS */}
@@ -851,6 +940,8 @@ function App() {
           Sell
         </div>
       </div>
+      
+      <Analytics />
     </div>
   );
 }

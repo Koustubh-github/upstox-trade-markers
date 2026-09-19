@@ -6,7 +6,7 @@ const router = express.Router();
 
 router.get("/", async (req, res) => {
   try {
-    const accessToken = authRoutes.getAccessToken();
+    const accessToken = authRoutes.getAccessToken(req);
 
     if (!accessToken) {
       return res.status(401).json({

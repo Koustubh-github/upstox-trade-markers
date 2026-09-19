@@ -12,7 +12,7 @@ const UPSTOX_API_BASE = "https://api.upstox.com/v3";
 
 router.get("/:instrumentToken", async (req, res) => {
   try {
-    const accessToken = authRoutes.getAccessToken();
+    const accessToken = authRoutes.getAccessToken(req);
 
     const instrumentToken = req.params.instrumentToken;
 
@@ -33,7 +33,7 @@ router.get("/:instrumentToken", async (req, res) => {
       const intradayRes = await axios.get(
         `${UPSTOX_API_BASE}/historical-candle/intraday/${encodeURIComponent(
           instrumentToken
-        )}/minutes/1`,
+        )}/minutes/5`,
         { headers }
       );
       candles = intradayRes.data?.data?.candles || [];
@@ -48,7 +48,7 @@ router.get("/:instrumentToken", async (req, res) => {
         const histRes = await axios.get(
           `${UPSTOX_API_BASE}/historical-candle/${encodeURIComponent(
             instrumentToken
-          )}/minutes/1/${todayStr}`,
+          )}/minutes/5/${todayStr}`,
           { headers }
         );
         const allHistCandles = histRes.data?.data?.candles || [];

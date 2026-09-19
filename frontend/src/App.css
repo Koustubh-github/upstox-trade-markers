@@ -618,3 +618,24 @@ button {
   }
 
 }
+
+/* PRD BUTTON */
+.prd-button {
+  display: inline-block;
+  padding: 8px 18px;
+  background-color: #2563eb;
+  color: #ffffff !important;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  border-radius: 6px;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.prd-button:hover {
+  background-color: #1d4ed8;
+  transform: translateY(-1px);
+}
+.prd-button:active {
+  transform: translateY(0);
+}
