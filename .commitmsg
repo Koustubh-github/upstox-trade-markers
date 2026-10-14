@@ -1,0 +1,5 @@
+fix: restore NIFTY 22,850 PE instrument and filter synthetic zero-volume candles
+
+1. Filter synthetic zero-volume flat intervals from Upstox intraday data so legitimate trading candles render cleanly with proper OHLC bodies and wicks instead of dotted lines.
+2. Filter authenticated trades to strictly match NSE_FO|56936 (NIFTY 22,850 PE). If account has no trades for this instrument (e.g. SENSEX trades or other symbols), preserve the 7 mock trade markers so markers never disappear.
+3. Keep instrumentSymbol pinned to NIFTY 22,850 PE to prevent accidental overwrite by unrelated BSE/SENSEX contracts.

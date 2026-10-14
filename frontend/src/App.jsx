@@ -214,7 +214,7 @@ function App() {
   const [chartCandles, setChartCandles] = useState([]);
   const [loadingCandles, setLoadingCandles] = useState(true);
   const [candleError, setCandleError] = useState(null);
-  const [instrumentSymbol, setInstrumentSymbol] = useState("NIFTY 22,850 PE");
+  const instrumentSymbol = "NIFTY 22,850 PE";
 
   const TRADE_THRESHOLD = 4;
 
@@ -288,7 +288,14 @@ function App() {
         const data = await response.json();
 
         if (!cancelled) {
-          setChartCandles(data);
+          // Filter out synthetic zero-volume flat intervals where no trades occurred,
+          // preserving legitimate trading candles and their authentic OHLC values.
+          const activeCandles = Array.isArray(data)
+            ? data.filter(
+                (c) => c.volume > 0 || c.open !== c.close || c.high !== c.low
+              )
+            : [];
+          setChartCandles(activeCandles.length > 0 ? activeCandles : data);
         }
       } catch (error) {
         if (!cancelled) {
@@ -337,33 +344,47 @@ function App() {
           : [];
 
         if (apiTrades.length > 0 && !cancelled) {
-          const formattedTrades = apiTrades.map((trade) => {
-            const date = trade.time
-              ? new Date(trade.time * 1000)
-              : trade.timestamp
-              ? new Date(trade.timestamp)
-              : new Date();
-
-            return {
-              id: trade.tradeId || Math.random(),
-              time: trade.time || Math.floor(date.getTime() / 1000),
-              side: trade.side || "BUY",
-              price: Number(trade.price) || 0,
-              quantity: Number(trade.quantity) || 1,
-              lots: 1,
-              option: trade.symbol || "NIFTY 22,850 PE",
-              orderTime: date.toLocaleTimeString("en-IN", {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              }),
-              instrumentToken: trade.instrumentToken,
-            };
+          // Check configured instrument key against candle instrument. Do not mix NSE and BSE.
+          const matchingTrades = apiTrades.filter((trade) => {
+            const token = String(trade.instrumentToken || "");
+            const sym = String(trade.symbol || "");
+            return (
+              token === "NSE_FO|56936" ||
+              token === "56936" ||
+              (sym.includes("22850") && sym.includes("NIFTY"))
+            );
           });
 
-          setRawTrades(formattedTrades);
-          if (formattedTrades[0]?.option) {
-            setInstrumentSymbol(formattedTrades[0].option);
+          if (matchingTrades.length > 0) {
+            const formattedTrades = matchingTrades.map((trade) => {
+              const date = trade.time
+                ? new Date(trade.time * 1000)
+                : trade.timestamp
+                ? new Date(trade.timestamp)
+                : new Date();
+
+              return {
+                id: trade.tradeId || Math.random(),
+                time: trade.time || Math.floor(date.getTime() / 1000),
+                side: trade.side || "BUY",
+                price: Number(trade.price) || 0,
+                quantity: Number(trade.quantity) || 1,
+                lots: Math.max(1, Math.round((Number(trade.quantity) || 65) / 65)),
+                option: "NIFTY 22,850 PE",
+                orderTime: date.toLocaleTimeString("en-IN", {
+                  timeZone: "Asia/Kolkata",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }),
+                instrumentToken: trade.instrumentToken,
+              };
+            });
+
+            setRawTrades(formattedTrades);
+          } else {
+            console.log(
+              "Account trades do not match NIFTY 22,850 PE (NSE_FO|56936); preserving 7 mock trade markers."
+            );
           }
         }
       } catch (error) {
