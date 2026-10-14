@@ -33,7 +33,7 @@ router.get("/:instrumentToken", async (req, res) => {
       const intradayRes = await axios.get(
         `${UPSTOX_API_BASE}/historical-candle/intraday/${encodeURIComponent(
           instrumentToken
-        )}/minutes/5`,
+        )}/minutes/1`,
         { headers }
       );
       candles = intradayRes.data?.data?.candles || [];
@@ -48,7 +48,7 @@ router.get("/:instrumentToken", async (req, res) => {
         const histRes = await axios.get(
           `${UPSTOX_API_BASE}/historical-candle/${encodeURIComponent(
             instrumentToken
-          )}/minutes/5/${todayStr}`,
+          )}/minutes/1/${todayStr}`,
           { headers }
         );
         const allHistCandles = histRes.data?.data?.candles || [];

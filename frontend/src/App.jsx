@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Analytics } from "@vercel/analytics/react";
 import {
   createChart,
@@ -95,55 +95,66 @@ const mockTrades = [
   3. If the target candle doesn't overlap ₹16–₹19, find the nearest
      candle that does.
 */
-function alignMockTradesToCandles(mockList, candles) {
-  if (!candles || candles.length === 0) return mockList;
+function alignTradesToCandles(tradeList, candles) {
+  if (!candles || candles.length === 0 || !tradeList || tradeList.length === 0) {
+    return tradeList || [];
+  }
 
-  /*
-    Pick different candles spread across the valid region.
-    This prevents all markers from landing on one candle.
-  */
-  const selectedCandles = mockList.map((_, tradeIndex) => {
-    const position =
-      mockList.length === 1
-        ? 0
-        : tradeIndex / (mockList.length - 1);
+  const candleStartTime = candles[0].time;
+  const candleEndTime = candles[candles.length - 1].time;
 
-    const validIndex = Math.round(
-      position * (candles.length - 1)
-    );
+  return tradeList.map((trade, index) => {
+    // If trade already has a realistic timestamp matching or near candle range:
+    let targetCandle = null;
+    const hasRealisticTime =
+      typeof trade.time === "number" &&
+      trade.time >= candleStartTime - 900 &&
+      trade.time <= candleEndTime + 900;
 
-    return candles[validIndex];
-  });
+    if (hasRealisticTime) {
+      let minDiff = Infinity;
+      for (const c of candles) {
+        const diff = Math.abs(c.time - trade.time);
+        if (diff < minDiff) {
+          minDiff = diff;
+          targetCandle = c;
+        }
+      }
+      if (minDiff > 900) {
+        targetCandle = null;
+      }
+    }
 
-  return mockList.map((trade, index) => {
-    const candle = selectedCandles[index];
+    // For mock trades or trades without timestamp match, distribute across the candle series
+    if (!targetCandle) {
+      const position =
+        tradeList.length === 1 ? 0 : index / (tradeList.length - 1);
+      const validIndex = Math.round(position * (candles.length - 1));
+      targetCandle = candles[validIndex];
+    }
 
-    /*
-      Put the execution naturally inside the candle range,
-      rather than always exactly at Low or High.
-    */
-    const positions = [0.35, 0.60, 0.45, 0.70, 0.30, 0.55, 0.50];
+    let price = Number(trade.price);
+    // Ensure execution price is valid and falls inside candle Low-High range
+    if (!Number.isFinite(price) || price < targetCandle.low || price > targetCandle.high) {
+      const positions = [0.35, 0.60, 0.45, 0.70, 0.30, 0.55, 0.50];
+      const ratio = positions[index % positions.length];
+      price = targetCandle.low + (targetCandle.high - targetCandle.low) * ratio;
+      price = Number(price.toFixed(2));
+    }
 
-    const ratio = positions[index % positions.length];
-
-    let price = candle.low + (candle.high - candle.low) * ratio;
-    price = Number(price.toFixed(2));
-
-    const date = new Date(candle.time * 1000);
+    const date = new Date(targetCandle.time * 1000);
 
     return {
       ...trade,
-
-      // Use the actual selected candle timestamp
-      time: candle.time,
-
-      // Price is derived from this candle's actual range
+      time: targetCandle.time,
       price,
-
-      orderTime: date.toLocaleTimeString("en-IN", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
+      orderTime:
+        trade.orderTime && hasRealisticTime
+          ? trade.orderTime
+          : date.toLocaleTimeString("en-IN", {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
     };
   });
 }
@@ -199,7 +210,7 @@ function App() {
   const [selectedTrade, setSelectedTrade] = useState(null);
   const [showHelp, setShowHelp] = useState(false);
 
-  const [trades, setTrades] = useState(mockTrades);
+  const [rawTrades, setRawTrades] = useState(mockTrades);
   const [chartCandles, setChartCandles] = useState([]);
   const [loadingCandles, setLoadingCandles] = useState(true);
   const [candleError, setCandleError] = useState(null);
@@ -207,18 +218,27 @@ function App() {
 
   const TRADE_THRESHOLD = 4;
 
+  // Derive aligned trades deterministically from raw trades and currently loaded chart candles
+  const trades = useMemo(() => {
+    const listToAlign =
+      rawTrades && rawTrades.length > 0 ? rawTrades : mockTrades;
+    return alignTradesToCandles(listToAlign, chartCandles);
+  }, [rawTrades, chartCandles]);
+
   const visibleTrades = useMemo(() => {
     return showAllTrades || trades.length <= TRADE_THRESHOLD
       ? trades
       : trades.slice(-TRADE_THRESHOLD);
   }, [showAllTrades, trades]);
 
-  // Keep refs in sync so asynchronous callbacks always read current state
   const visibleTradesRef = useRef(visibleTrades);
-  visibleTradesRef.current = visibleTrades;
-
   const showTradesRef = useRef(showTrades);
-  showTradesRef.current = showTrades;
+
+  // Keep refs in sync so animation frame / resize callbacks always read current state without violating React render rules
+  useEffect(() => {
+    visibleTradesRef.current = visibleTrades;
+    showTradesRef.current = showTrades;
+  }, [visibleTrades, showTrades]);
 
   /*
     Check Upstox authentication status
@@ -290,7 +310,9 @@ function App() {
   }, []);
 
   /*
-    Fetch today's executed trades when authenticated
+    Fetch today's executed trades when authenticated.
+    If authenticated account has no trades (empty array) or the endpoint fails,
+    preserve the mock trade markers so the demo visualization remains functional.
   */
   useEffect(() => {
     if (!authStatus.authenticated) {
@@ -303,6 +325,7 @@ function App() {
       try {
         const response = await fetch(`${API_BASE}/api/trades`);
         if (!response.ok) {
+          console.warn(`Trades API returned status ${response.status}; preserving mock markers.`);
           return;
         }
 
@@ -338,7 +361,7 @@ function App() {
             };
           });
 
-          setTrades(formattedTrades);
+          setRawTrades(formattedTrades);
           if (formattedTrades[0]?.option) {
             setInstrumentSymbol(formattedTrades[0].option);
           }
@@ -354,22 +377,6 @@ function App() {
       cancelled = true;
     };
   }, [authStatus.authenticated]);
-
-  /*
-    Align mock trades when running in demo mode or when no real API trades are loaded
-  */
-  useEffect(() => {
-    if (chartCandles.length > 0) {
-      const isUsingMock =
-        !authStatus.authenticated ||
-        trades.length === 0 ||
-        trades[0]?.id === mockTrades[0]?.id;
-
-      if (isUsingMock) {
-        setTrades(alignMockTradesToCandles(mockTrades, chartCandles));
-      }
-    }
-  }, [chartCandles, authStatus.authenticated, trades.length]);
 
   const optionPnL = calculateOptionPnL(trades);
 
@@ -418,11 +425,11 @@ function App() {
     );
   };
 
-  const scheduleMarkerUpdate = () => {
+  const scheduleMarkerUpdate = useCallback(() => {
     requestAnimationFrame(() => {
       updateTradeMarkers();
     });
-  };
+  }, []);
 
   /*
     CREATE CHART INSTANCE (Mount once)
@@ -558,7 +565,7 @@ function App() {
       seriesRef.current = null;
     };
 
-  }, []);
+  }, [scheduleMarkerUpdate]);
 
   /*
     UPDATE CANDLE DATA ON SERIES
@@ -573,7 +580,7 @@ function App() {
       chartRef.current.timeScale().fitContent();
     }
     scheduleMarkerUpdate();
-  }, [chartCandles]);
+  }, [chartCandles, scheduleMarkerUpdate]);
 
   /*
     CREATE / UPDATE DOM MARKERS WHEN TRADES OR CANDLES CHANGE
@@ -634,14 +641,14 @@ function App() {
     });
 
     scheduleMarkerUpdate();
-  }, [trades, chartCandles]);
+  }, [trades, chartCandles, scheduleMarkerUpdate]);
 
   /*
     Update marker visibility when filters change
   */
   useEffect(() => {
     scheduleMarkerUpdate();
-  }, [showTrades, showAllTrades, visibleTrades]);
+  }, [showTrades, showAllTrades, visibleTrades, scheduleMarkerUpdate]);
 
   // Current price from latest candle close or fallback
   const currentPrice = useMemo(() => {
@@ -854,6 +861,43 @@ function App() {
                     <strong>“Upstox Live”</strong> — connected to live Upstox market data; executions shown are simulated
                   </div>
                 </div>
+              </div>
+            )}
+            {loadingCandles && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "16px",
+                  left: "16px",
+                  background: "rgba(15, 23, 42, 0.8)",
+                  border: "1px solid #334155",
+                  borderRadius: "6px",
+                  padding: "6px 12px",
+                  color: "#94a3b8",
+                  fontSize: "12px",
+                  zIndex: 20,
+                  pointerEvents: "none",
+                }}
+              >
+                Loading 1m candles...
+              </div>
+            )}
+            {candleError && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "16px",
+                  left: "16px",
+                  background: "rgba(127, 29, 29, 0.9)",
+                  border: "1px solid #ef4444",
+                  borderRadius: "6px",
+                  padding: "6px 12px",
+                  color: "#fecaca",
+                  fontSize: "12px",
+                  zIndex: 20,
+                }}
+              >
+                {candleError}
               </div>
             )}
             <div ref={chartContainerRef} className="chart-container" />
